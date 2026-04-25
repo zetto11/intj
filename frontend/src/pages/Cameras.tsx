@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../App';
-import { Camera } from '../types';
+import { Camera, CameraTrack } from '../types';
 import { 
   Search, 
   Filter, 
@@ -41,6 +41,22 @@ const formatUptimeHHMMSS = (totalSeconds: number) => {
   return `${hh}:${mm}:${ss}`;
 };
 
+const normalizeDetection = (camera: Camera) => {
+  const personCount = Number(camera.person_count || 0);
+  const personDetected = Boolean(camera.person_detected) && personCount > 0;
+  const faceDetected = Boolean(camera.face_detected);
+  const alertLevel = personDetected ? (personCount >= 2 ? 'high' : 'medium') : 'none';
+  return { personDetected, personCount, faceDetected, alertLevel };
+};
+
+const hasValidTrack = (track?: CameraTrack | null) => (
+  !!track
+  && Number.isFinite(track.x)
+  && Number.isFinite(track.y)
+  && Number.isFinite(track.w)
+  && Number.isFinite(track.h)
+);
+
 // Camera Feed Component
 const CameraFeed = ({
   camera,
@@ -75,6 +91,17 @@ const CameraFeed = ({
       )
     )
   );
+  const detection = normalizeDetection(camera);
+  const personTracks = detection.personDetected
+    ? (Array.isArray(camera.person_tracks) && camera.person_tracks.length
+        ? camera.person_tracks.filter(hasValidTrack)
+        : (hasValidTrack(camera.person_track) ? [camera.person_track] : []))
+    : [];
+  const faceTracks = detection.faceDetected
+    ? (Array.isArray(camera.face_tracks) && camera.face_tracks.length
+        ? camera.face_tracks.filter(hasValidTrack)
+        : (hasValidTrack(camera.face_track) ? [camera.face_track] : []))
+    : [];
 
   useEffect(() => {
     const timer = setInterval(() => setTimestamp(new Date().toLocaleTimeString()), 1000);
@@ -204,6 +231,46 @@ const CameraFeed = ({
                    onStreamLoad();
                  }}
                />
+
+               {personTracks.map((track, idx) => (
+                 <motion.div
+                   key={`person-track-${track.id ?? idx}`}
+                   initial={false}
+                   animate={{
+                     left: `${track.x * 100}%`,
+                     top: `${track.y * 100}%`,
+                     width: `${track.w * 100}%`,
+                     height: `${track.h * 100}%`,
+                     opacity: 1
+                   }}
+                   transition={{ duration: 0.35, ease: 'easeOut' }}
+                   className={`absolute rounded-2xl border-2 pointer-events-none z-20 ${
+                     detection.personCount >= 2
+                       ? 'border-yellow-300 shadow-[0_0_24px_rgba(234,179,8,0.65)]'
+                       : 'border-emerald-300 shadow-[0_0_22px_rgba(16,185,129,0.55)]'
+                   } animate-pulse`}
+                 />
+               ))}
+
+               {faceTracks.map((track, idx) => (
+                 <motion.div
+                   key={`face-track-${track.id ?? idx}`}
+                   initial={false}
+                   animate={{
+                     left: `${track.x * 100}%`,
+                     top: `${track.y * 100}%`,
+                     width: `${track.w * 100}%`,
+                     height: `${track.h * 100}%`,
+                     opacity: 1
+                   }}
+                   transition={{ duration: 0.28, ease: 'easeOut' }}
+                   className={`absolute rounded-full border-2 pointer-events-none z-20 ${
+                     detection.personCount >= 2
+                       ? 'border-rose-300 shadow-[0_0_20px_rgba(244,63,94,0.6)]'
+                       : 'border-blue-300 shadow-[0_0_20px_rgba(59,130,246,0.6)]'
+                   } animate-pulse`}
+                 />
+               ))}
                <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_50%,transparent_50%,rgba(0,0,0,0.4)_100%)]" />
                <div className="absolute inset-0 pointer-events-none mix-blend-overlay opacity-20 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] bg-repeat" />
                
@@ -262,6 +329,32 @@ const CameraFeed = ({
                 <span className="text-[10px] font-mono font-black text-white tracking-[0.2em] uppercase">{camera.name} • {camera.zone}</span>
              </div>
           </div>
+
+          <div className="absolute top-6 right-6 flex flex-col gap-2 z-20">
+            {!detection.personDetected ? (
+              <div className="px-3 py-1 rounded-full bg-slate-900/70 border border-slate-700 text-[10px] font-mono text-slate-300 tracking-wider uppercase">
+                No Activity
+              </div>
+            ) : (
+              <>
+                <div className={`px-3 py-1 rounded-full border text-[10px] font-mono tracking-wider uppercase ${detection.alertLevel === 'high' ? 'bg-rose-600/30 border-rose-400 text-rose-100 shadow-[0_0_14px_rgba(244,63,94,0.45)]' : 'bg-emerald-600/20 border-emerald-400 text-emerald-100'}`}>
+                  Human Detected
+                </div>
+                <div className="px-3 py-1 rounded-full bg-black/60 border border-white/20 text-[10px] font-mono text-white">
+                  👤 x{detection.personCount}
+                </div>
+                {detection.faceDetected && (
+                  <div className="px-3 py-1 rounded-full bg-blue-600/20 border border-blue-400 text-[10px] font-mono text-blue-100 uppercase tracking-wider">
+                    Face Detected
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          {detection.personDetected && canRenderStream && (
+            <div className={`absolute inset-6 border-2 ${detection.alertLevel === 'high' ? 'border-rose-500' : 'border-emerald-400'} rounded-xl pointer-events-none animate-pulse`} />
+          )}
         </div>
 
         {/* Tactical Info Panel */}
@@ -353,6 +446,7 @@ function CameraCard({ camera, onClick, onBlock, onEdit, onDelete, isAdmin, viewM
   const isListMode = viewMode === 'list';
   const [streamSrc, setStreamSrc] = useState(normalizeStreamUrl(camera.ip_simulated));
   const [triedVideoFallback, setTriedVideoFallback] = useState(false);
+  const detection = normalizeDetection(camera);
 
   useEffect(() => {
     setStreamFailed(false);
@@ -469,6 +563,18 @@ function CameraCard({ camera, onClick, onBlock, onEdit, onDelete, isAdmin, viewM
                 </div>
             </div>
 
+            <div className="mb-4 flex flex-wrap gap-2">
+              {!detection.personDetected ? (
+                <span className="px-2 py-1 rounded-md border border-slate-700 bg-slate-900/30 text-[10px] text-slate-400 uppercase tracking-wider">No Activity</span>
+              ) : (
+                <>
+                  <span className={`px-2 py-1 rounded-md border text-[10px] uppercase tracking-wider ${detection.alertLevel === 'high' ? 'border-rose-500/40 bg-rose-500/20 text-rose-200' : 'border-emerald-500/40 bg-emerald-500/20 text-emerald-200'}`}>Human Detected</span>
+                  <span className="px-2 py-1 rounded-md border border-white/20 bg-black/20 text-[10px] text-white">👤 x{detection.personCount}</span>
+                  {detection.faceDetected && <span className="px-2 py-1 rounded-md border border-blue-500/40 bg-blue-500/20 text-[10px] text-blue-100 uppercase tracking-wider">Face Detected</span>}
+                </>
+              )}
+            </div>
+
             <div className="mt-auto space-y-4">
                 <div className="flex items-center justify-between">
                    <div className="flex flex-col">
@@ -582,6 +688,34 @@ export default function Cameras() {
     socket.on('camera_telemetry_update', onTelemetry);
     return () => {
       socket.off('camera_telemetry_update', onTelemetry);
+    };
+  }, [socket]);
+
+  useEffect(() => {
+    if (!socket) return;
+    const onAiDetection = (payload: any) => {
+      setCameras(prev =>
+        prev.map(cam =>
+          cam.id === payload.camera_id
+            ? {
+                ...cam,
+                person_detected: !!payload.person_detected,
+                person_count: Number(payload.person_count || 0),
+                face_detected: !!payload.face_detected,
+                alert_level: payload.alert_level || 'none',
+                last_analyzed_at: payload.detected_at,
+                person_track: payload.person_track || null,
+                face_track: payload.face_track || null,
+                person_tracks: Array.isArray(payload.person_tracks) ? payload.person_tracks : [],
+                face_tracks: Array.isArray(payload.face_tracks) ? payload.face_tracks : [],
+              }
+            : cam
+        )
+      );
+    };
+    socket.on('camera_ai_detection_update', onAiDetection);
+    return () => {
+      socket.off('camera_ai_detection_update', onAiDetection);
     };
   }, [socket]);
 

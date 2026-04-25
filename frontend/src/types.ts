@@ -7,6 +7,7 @@ export interface Camera {
   is_blocked: boolean;
   last_seen: string;
   signal_percent?: number | null;
+  uptime_seconds?: number | null;
   uptime_hours?: number | null;
   thermal_celsius?: number | null;
   load_percent?: number | null;
@@ -14,8 +15,25 @@ export interface Camera {
   storage_used_tb?: number | null;
   storage_node_label?: string | null;
   telemetry_updated_at?: string | null;
+  person_detected?: boolean | null;
+  person_count?: number | null;
+  face_detected?: boolean | null;
+  alert_level?: 'none' | 'medium' | 'high' | null;
+  last_analyzed_at?: string | null;
+  person_track?: CameraTrack | null;
+  face_track?: CameraTrack | null;
+  person_tracks?: CameraTrack[] | null;
+  face_tracks?: CameraTrack[] | null;
   lat?: number;
   lng?: number;
+}
+
+export interface CameraTrack {
+  id?: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
 export interface AccessPoint {

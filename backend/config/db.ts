@@ -16,6 +16,37 @@ export let pool: any = null;
 let sqliteDb: any = null;
 let isUsingSqlite = false;
 
+
+async function ensureAiVisionTablesMySql() {
+  if (!pool) return;
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS camera_ai_detections (
+      camera_id INT PRIMARY KEY,
+      person_detected TINYINT(1) NOT NULL DEFAULT 0,
+      person_count INT NOT NULL DEFAULT 0,
+      face_detected TINYINT(1) NOT NULL DEFAULT 0,
+      alert_level ENUM('none', 'medium', 'high') NOT NULL DEFAULT 'none',
+      last_analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      CONSTRAINT fk_ai_detection_camera FOREIGN KEY (camera_id) REFERENCES cameras(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS camera_ai_detection_events (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      camera_id INT NOT NULL,
+      person_detected TINYINT(1) NOT NULL,
+      person_count INT NOT NULL,
+      face_detected TINYINT(1) NOT NULL,
+      alert_level ENUM('none', 'medium', 'high') NOT NULL DEFAULT 'none',
+      detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT fk_ai_event_camera FOREIGN KEY (camera_id) REFERENCES cameras(id) ON DELETE CASCADE,
+      INDEX idx_ai_events_camera_time (camera_id, detected_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+}
+
+
 export async function connectToDatabase() {
   try {
     console.log(`[DB] Attempting MySQL connection: ${dbConfig.host}:${dbConfig.port}...`);
@@ -23,6 +54,7 @@ export async function connectToDatabase() {
     const connection = await pool.getConnection();
     console.log("[DB] MySQL connection established.");
     connection.release();
+    await ensureAiVisionTablesMySql();
     return true;
   } catch (err: any) {
     console.warn(`[DB] MySQL Failed (${err.code}). Activating SQLite Fallback...`);
@@ -80,6 +112,23 @@ function setupSqlite() {
       message TEXT NOT NULL,
       user_id INTEGER,
       timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS camera_ai_detections (
+      camera_id INTEGER PRIMARY KEY,
+      person_detected INTEGER NOT NULL DEFAULT 0,
+      person_count INTEGER NOT NULL DEFAULT 0,
+      face_detected INTEGER NOT NULL DEFAULT 0,
+      alert_level TEXT NOT NULL DEFAULT 'none',
+      last_analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS camera_ai_detection_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      camera_id INTEGER NOT NULL,
+      person_detected INTEGER NOT NULL,
+      person_count INTEGER NOT NULL,
+      face_detected INTEGER NOT NULL,
+      alert_level TEXT NOT NULL DEFAULT 'none',
+      detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `);
 

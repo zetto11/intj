@@ -44,9 +44,15 @@ export const getCameras = async (req: AuthRequest, res: Response) => {
         ct.retain_days_remaining,
         ct.storage_used_tb,
         ct.storage_node_label,
-        ct.updated_at AS telemetry_updated_at
+        ct.updated_at AS telemetry_updated_at,
+        ad.person_detected,
+        ad.person_count,
+        ad.face_detected,
+        ad.alert_level,
+        ad.last_analyzed_at
       FROM cameras c
       LEFT JOIN camera_telemetry ct ON ct.camera_id = c.id
+      LEFT JOIN camera_ai_detections ad ON ad.camera_id = c.id
       ORDER BY c.id DESC`
     );
     res.json(rows);

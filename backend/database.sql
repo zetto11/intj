@@ -76,6 +76,33 @@ CREATE TABLE `system_logs` (
   INDEX `idx_system_user_id` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+
+-- 7. CAMERA AI DETECTION TABLE (LAST RESULT PER CAMERA)
+CREATE TABLE `camera_ai_detections` (
+  `camera_id` INT PRIMARY KEY,
+  `person_detected` BOOLEAN NOT NULL DEFAULT FALSE,
+  `person_count` INT NOT NULL DEFAULT 0,
+  `face_detected` BOOLEAN NOT NULL DEFAULT FALSE,
+  `alert_level` ENUM('none', 'medium', 'high') NOT NULL DEFAULT 'none',
+  `last_analyzed_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT `fk_ai_detection_camera` FOREIGN KEY (`camera_id`) REFERENCES `cameras` (`id`) ON DELETE CASCADE,
+  INDEX `idx_ai_detection_alert_level` (`alert_level`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 8. CAMERA AI DETECTION EVENTS TABLE (OPTIONAL HISTORICAL LOG)
+CREATE TABLE `camera_ai_detection_events` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `camera_id` INT NOT NULL,
+  `person_detected` BOOLEAN NOT NULL,
+  `person_count` INT NOT NULL,
+  `face_detected` BOOLEAN NOT NULL,
+  `alert_level` ENUM('none', 'medium', 'high') NOT NULL DEFAULT 'none',
+  `detected_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT `fk_ai_event_camera` FOREIGN KEY (`camera_id`) REFERENCES `cameras` (`id`) ON DELETE CASCADE,
+  INDEX `idx_ai_events_camera_id` (`camera_id`),
+  INDEX `idx_ai_events_detected_at` (`detected_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ==========================================
 -- INSERT SAMPLE TEST DATA
 -- ==========================================
