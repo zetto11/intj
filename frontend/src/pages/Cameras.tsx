@@ -131,10 +131,12 @@ const CameraFeed = ({
   const [analysisMessage, setAnalysisMessage] = useState<string | null>(null);
   const [streamSrc, setStreamSrc] = useState(normalizeStreamUrl(camera.ip_simulated));
   const [triedVideoFallback, setTriedVideoFallback] = useState(false);
+  const [streamRenderMode, setStreamRenderMode] = useState<'video' | 'image'>('video');
   const [faceDetected, setFaceDetected] = useState(false);
   const [faceAppearances, setFaceAppearances] = useState(0);
   const [lastFaceSeenAt, setLastFaceSeenAt] = useState<string>('Never');
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const faceModelRef = useRef<any>(null);
   const personModelRef = useRef<any>(null);
@@ -163,6 +165,7 @@ const CameraFeed = ({
     setStreamLive(false);
     setStreamSrc(normalizeStreamUrl(camera.ip_simulated));
     setTriedVideoFallback(false);
+    setStreamRenderMode('video');
     setFaceDetected(false);
     setFaceAppearances(0);
     setLastFaceSeenAt('Never');
@@ -172,23 +175,27 @@ const CameraFeed = ({
   useEffect(() => {
     if (!canRenderStream) return;
     const video = videoRef.current;
+    const image = imageRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas) return;
+    const source = streamRenderMode === 'video' ? video : image;
+    if (!source || !canvas) return;
 
     let disposed = false;
 
-    const syncCanvasToVideo = () => {
-      if (!video.videoWidth || !video.videoHeight) return;
-      if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
+    const syncCanvasToSource = () => {
+      const sourceWidth = streamRenderMode === 'video' ? video?.videoWidth : image?.naturalWidth;
+      const sourceHeight = streamRenderMode === 'video' ? video?.videoHeight : image?.naturalHeight;
+      if (!sourceWidth || !sourceHeight) return;
+      if (canvas.width !== sourceWidth || canvas.height !== sourceHeight) {
+        canvas.width = sourceWidth;
+        canvas.height = sourceHeight;
       }
     };
 
     const drawDetections = (faces: any[], people: any[]) => {
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
-      syncCanvasToVideo();
+      syncCanvasToSource();
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.lineWidth = 2;
       ctx.font = '14px monospace';
@@ -226,7 +233,9 @@ const CameraFeed = ({
     const detectLoop = async () => {
       if (disposed) return;
       animationRef.current = requestAnimationFrame(detectLoop);
-      if (!video.videoWidth || !video.videoHeight) return;
+      const sourceWidth = streamRenderMode === 'video' ? video?.videoWidth : image?.naturalWidth;
+      const sourceHeight = streamRenderMode === 'video' ? video?.videoHeight : image?.naturalHeight;
+      if (!sourceWidth || !sourceHeight) return;
 
       const now = Date.now();
       if (now - detectIntervalRef.current < 150) return;
@@ -236,8 +245,8 @@ const CameraFeed = ({
 
       try {
         const [faces, objects] = await Promise.all([
-          faceModelRef.current.estimateFaces(video, false),
-          personModelRef.current.detect(video),
+          faceModelRef.current.estimateFaces(source, false),
+          personModelRef.current.detect(source),
         ]);
         const hasFace = (faces?.length ?? 0) > 0;
         if (hasFace !== faceVisibleRef.current) {
@@ -282,18 +291,36 @@ const CameraFeed = ({
     };
 
     const handleLoadedMetadata = () => {
-      syncCanvasToVideo();
+      syncCanvasToSource();
       startDetection();
     };
 
-    video.addEventListener('loadedmetadata', handleLoadedMetadata);
-    if (video.readyState >= 1) {
-      handleLoadedMetadata();
+    const handleImageLoad = () => {
+      syncCanvasToSource();
+      startDetection();
+    };
+
+    if (streamRenderMode === 'video' && video) {
+      video.addEventListener('loadedmetadata', handleLoadedMetadata);
+      if (video.readyState >= 1) {
+        handleLoadedMetadata();
+      }
+    }
+    if (streamRenderMode === 'image' && image) {
+      image.addEventListener('load', handleImageLoad);
+      if (image.complete) {
+        handleImageLoad();
+      }
     }
 
     return () => {
       disposed = true;
-      video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      if (video) {
+        video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      }
+      if (image) {
+        image.removeEventListener('load', handleImageLoad);
+      }
       if (animationRef.current != null) {
         cancelAnimationFrame(animationRef.current);
         animationRef.current = null;
@@ -303,7 +330,7 @@ const CameraFeed = ({
         ctx.clearRect(0, 0, canvas.width, canvas.height);
       }
     };
-  }, [canRenderStream, camera.id]);
+  }, [canRenderStream, camera.id, streamRenderMode]);
 
   const handleCaptureFrame = async () => {
     try {
@@ -399,30 +426,44 @@ const CameraFeed = ({
             </div>
           ) : (
             <>
-               <video
-                 ref={videoRef}
-                 src={streamSrc}
-                 className="w-full h-full object-cover"
-                 muted
-                 autoPlay
-                 playsInline
-                 onError={() => {
-                   if (!triedVideoFallback) {
+               {streamRenderMode === 'video' ? (
+                 <video
+                   ref={videoRef}
+                   src={streamSrc}
+                   className="w-full h-full object-cover"
+                   muted
+                   autoPlay
+                   playsInline
+                   onError={() => {
                      const fallback = normalizeStreamUrl(camera.ip_simulated, true);
-                     if (fallback && fallback !== streamSrc) {
+                     if (!triedVideoFallback && fallback && fallback !== streamSrc) {
                        setTriedVideoFallback(true);
                        setStreamSrc(fallback);
                        return;
                      }
-                   }
-                   setStreamLive(false);
-                   onStreamError();
-                 }}
-                 onLoadedData={() => {
-                   setStreamLive(true);
-                   onStreamLoad();
-                 }}
-               />
+                     setStreamRenderMode('image');
+                   }}
+                   onLoadedData={() => {
+                     setStreamLive(true);
+                     onStreamLoad();
+                   }}
+                 />
+               ) : (
+                 <img
+                   ref={imageRef}
+                   src={streamSrc}
+                   className="w-full h-full object-cover"
+                   alt={camera.name}
+                   onError={() => {
+                     setStreamLive(false);
+                     onStreamError();
+                   }}
+                   onLoad={() => {
+                     setStreamLive(true);
+                     onStreamLoad();
+                   }}
+                 />
+               )}
                <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
                <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_50%,transparent_50%,rgba(0,0,0,0.4)_100%)]" />
                <div className="absolute inset-0 pointer-events-none mix-blend-overlay opacity-20 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] bg-repeat" />
