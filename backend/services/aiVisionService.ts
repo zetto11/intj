@@ -9,10 +9,13 @@ export interface DetectionPayload {
   alert_level: "none" | "medium" | "high";
   person_track: TrackingTarget | null;
   face_track: TrackingTarget | null;
+  person_tracks: TrackingTarget[];
+  face_tracks: TrackingTarget[];
   detected_at: string;
 }
 
 export interface TrackingTarget {
+  id: number;
   x: number;
   y: number;
   w: number;
@@ -23,7 +26,7 @@ const randInt = (min: number, max: number) => Math.floor(Math.random() * (max - 
 const randFloat = (min: number, max: number) => Math.random() * (max - min) + min;
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 
-const trackState = new Map<number, { person: TrackingTarget; face: TrackingTarget }>();
+const trackState = new Map<number, { people: TrackingTarget[]; faces: TrackingTarget[] }>();
 
 const deriveDetectionFromFrame = (bytes: Uint8Array) => {
   if (!bytes?.length) {
@@ -118,7 +121,8 @@ const persistDetection = async (payload: DetectionPayload, previous?: Partial<De
   return changed;
 };
 
-const createBaseTarget = (): TrackingTarget => ({
+const createBaseTarget = (id = 0): TrackingTarget => ({
+  id,
   x: randFloat(0.15, 0.72),
   y: randFloat(0.12, 0.68),
   w: randFloat(0.16, 0.26),
@@ -128,6 +132,7 @@ const createBaseTarget = (): TrackingTarget => ({
 const smoothTarget = (prev: TrackingTarget | null, next: TrackingTarget): TrackingTarget => {
   if (!prev) return next;
   return {
+    id: next.id,
     x: clamp((prev.x * 0.7) + (next.x * 0.3), 0.05, 0.88),
     y: clamp((prev.y * 0.7) + (next.y * 0.3), 0.05, 0.88),
     w: clamp((prev.w * 0.75) + (next.w * 0.25), 0.12, 0.35),
@@ -135,29 +140,55 @@ const smoothTarget = (prev: TrackingTarget | null, next: TrackingTarget): Tracki
   };
 };
 
-const buildTrackingTargets = (cameraId: number, personDetected: boolean, faceDetected: boolean) => {
+const buildTrackingTargets = (cameraId: number, personCount: number, faceDetected: boolean) => {
   const prev = trackState.get(cameraId);
-  const personBase = createBaseTarget();
-  const nextPerson = personDetected ? smoothTarget(prev?.person || null, personBase) : null;
+  const people: TrackingTarget[] = [];
+  for (let idx = 0; idx < personCount; idx += 1) {
+    const previous = prev?.people?.[idx] || null;
+    const base = previous
+      ? {
+          id: idx,
+          x: clamp(previous.x + randFloat(-0.04, 0.04), 0.05, 0.86),
+          y: clamp(previous.y + randFloat(-0.04, 0.04), 0.05, 0.84),
+          w: clamp(previous.w + randFloat(-0.02, 0.02), 0.14, 0.34),
+          h: clamp(previous.h + randFloat(-0.02, 0.02), 0.22, 0.5),
+        }
+      : createBaseTarget(idx);
+    people.push(smoothTarget(previous, base));
+  }
 
-  const faceBase: TrackingTarget = {
-    x: clamp((nextPerson?.x ?? personBase.x) + randFloat(0.04, 0.1), 0.05, 0.92),
-    y: clamp((nextPerson?.y ?? personBase.y) + randFloat(0.03, 0.09), 0.05, 0.92),
-    w: randFloat(0.08, 0.14),
-    h: randFloat(0.1, 0.16),
-  };
-  const nextFace = personDetected && faceDetected ? smoothTarget(prev?.face || null, faceBase) : null;
+  const faces: TrackingTarget[] = [];
+  if (faceDetected && people.length) {
+    const faceCount = Math.max(1, Math.min(people.length, randInt(1, people.length)));
+    for (let idx = 0; idx < faceCount; idx += 1) {
+      const person = people[idx];
+      const previousFace = prev?.faces?.[idx] || null;
+      const baseFace: TrackingTarget = {
+        id: idx,
+        x: clamp(person.x + randFloat(0.04, Math.max(0.08, person.w * 0.4)), 0.05, 0.92),
+        y: clamp(person.y + randFloat(0.03, Math.max(0.07, person.h * 0.25)), 0.05, 0.92),
+        w: clamp(person.w * randFloat(0.32, 0.45), 0.08, 0.16),
+        h: clamp(person.h * randFloat(0.28, 0.38), 0.1, 0.18),
+      };
+      faces.push(smoothTarget(previousFace, baseFace));
+    }
+  }
 
-  if (nextPerson || nextFace) {
+  if (people.length || faces.length) {
     trackState.set(cameraId, {
-      person: nextPerson || personBase,
-      face: nextFace || faceBase,
+      people,
+      faces,
     });
   } else {
     trackState.delete(cameraId);
   }
 
-  return { person_track: nextPerson, face_track: nextFace };
+  return {
+    person_track: people[0] || null,
+    face_track: faces[0] || null,
+    person_tracks: people,
+    face_tracks: faces,
+  };
 };
 
 export const runCameraDetection = async (camera: any): Promise<DetectionPayload> => {
@@ -186,7 +217,7 @@ export const runCameraDetection = async (camera: any): Promise<DetectionPayload>
       : "medium";
   const tracking = buildTrackingTargets(
     Number(camera.id),
-    detection.person_detected,
+    detection.person_count,
     detection.face_detected
   );
 
@@ -198,6 +229,8 @@ export const runCameraDetection = async (camera: any): Promise<DetectionPayload>
     alert_level,
     person_track: tracking.person_track,
     face_track: tracking.face_track,
+    person_tracks: tracking.person_tracks,
+    face_tracks: tracking.face_tracks,
     detected_at: new Date().toISOString(),
   };
 };

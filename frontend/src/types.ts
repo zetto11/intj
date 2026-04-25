@@ -22,11 +22,14 @@ export interface Camera {
   last_analyzed_at?: string | null;
   person_track?: CameraTrack | null;
   face_track?: CameraTrack | null;
+  person_tracks?: CameraTrack[] | null;
+  face_tracks?: CameraTrack[] | null;
   lat?: number;
   lng?: number;
 }
 
 export interface CameraTrack {
+  id?: number;
   x: number;
   y: number;
   w: number;

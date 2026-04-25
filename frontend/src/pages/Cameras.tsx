@@ -92,8 +92,16 @@ const CameraFeed = ({
     )
   );
   const detection = normalizeDetection(camera);
-  const personTrack = detection.personDetected && hasValidTrack(camera.person_track) ? camera.person_track : null;
-  const faceTrack = detection.faceDetected && hasValidTrack(camera.face_track) ? camera.face_track : null;
+  const personTracks = detection.personDetected
+    ? (Array.isArray(camera.person_tracks) && camera.person_tracks.length
+        ? camera.person_tracks.filter(hasValidTrack)
+        : (hasValidTrack(camera.person_track) ? [camera.person_track] : []))
+    : [];
+  const faceTracks = detection.faceDetected
+    ? (Array.isArray(camera.face_tracks) && camera.face_tracks.length
+        ? camera.face_tracks.filter(hasValidTrack)
+        : (hasValidTrack(camera.face_track) ? [camera.face_track] : []))
+    : [];
 
   useEffect(() => {
     const timer = setInterval(() => setTimestamp(new Date().toLocaleTimeString()), 1000);
@@ -224,35 +232,45 @@ const CameraFeed = ({
                  }}
                />
 
-               {personTrack && (
+               {personTracks.map((track, idx) => (
                  <motion.div
+                   key={`person-track-${track.id ?? idx}`}
                    initial={false}
                    animate={{
-                     left: `${personTrack.x * 100}%`,
-                     top: `${personTrack.y * 100}%`,
-                     width: `${personTrack.w * 100}%`,
-                     height: `${personTrack.h * 100}%`,
+                     left: `${track.x * 100}%`,
+                     top: `${track.y * 100}%`,
+                     width: `${track.w * 100}%`,
+                     height: `${track.h * 100}%`,
                      opacity: 1
                    }}
                    transition={{ duration: 0.35, ease: 'easeOut' }}
-                   className={`absolute rounded-2xl border-2 ${detection.alertLevel === 'high' ? 'border-rose-400' : 'border-emerald-400'} pointer-events-none shadow-[0_0_22px_rgba(16,185,129,0.45)] z-20`}
+                   className={`absolute rounded-2xl border-2 pointer-events-none z-20 ${
+                     detection.personCount >= 2
+                       ? 'border-yellow-300 shadow-[0_0_24px_rgba(234,179,8,0.65)]'
+                       : 'border-emerald-300 shadow-[0_0_22px_rgba(16,185,129,0.55)]'
+                   } animate-pulse`}
                  />
-               )}
+               ))}
 
-               {faceTrack && (
+               {faceTracks.map((track, idx) => (
                  <motion.div
+                   key={`face-track-${track.id ?? idx}`}
                    initial={false}
                    animate={{
-                     left: `${faceTrack.x * 100}%`,
-                     top: `${faceTrack.y * 100}%`,
-                     width: `${faceTrack.w * 100}%`,
-                     height: `${faceTrack.h * 100}%`,
+                     left: `${track.x * 100}%`,
+                     top: `${track.y * 100}%`,
+                     width: `${track.w * 100}%`,
+                     height: `${track.h * 100}%`,
                      opacity: 1
                    }}
                    transition={{ duration: 0.28, ease: 'easeOut' }}
-                   className="absolute rounded-full border-2 border-blue-300 pointer-events-none shadow-[0_0_20px_rgba(59,130,246,0.6)] z-20"
+                   className={`absolute rounded-full border-2 pointer-events-none z-20 ${
+                     detection.personCount >= 2
+                       ? 'border-rose-300 shadow-[0_0_20px_rgba(244,63,94,0.6)]'
+                       : 'border-blue-300 shadow-[0_0_20px_rgba(59,130,246,0.6)]'
+                   } animate-pulse`}
                  />
-               )}
+               ))}
                <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_50%,transparent_50%,rgba(0,0,0,0.4)_100%)]" />
                <div className="absolute inset-0 pointer-events-none mix-blend-overlay opacity-20 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] bg-repeat" />
                
@@ -688,6 +706,8 @@ export default function Cameras() {
                 last_analyzed_at: payload.detected_at,
                 person_track: payload.person_track || null,
                 face_track: payload.face_track || null,
+                person_tracks: Array.isArray(payload.person_tracks) ? payload.person_tracks : [],
+                face_tracks: Array.isArray(payload.face_tracks) ? payload.face_tracks : [],
               }
             : cam
         )
