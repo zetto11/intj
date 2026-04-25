@@ -847,6 +847,7 @@ export default function Cameras() {
   const [detectedCameras, setDetectedCameras] = useState<Array<{ name: string; ip_simulated: string; zone: string }>>([]);
   const [scanMessage, setScanMessage] = useState('');
   const [scanStats, setScanStats] = useState<{ scanned: number; found: number; duration_ms: number } | null>(null);
+  const [cameraLoadError, setCameraLoadError] = useState('');
 
   useEffect(() => {
     fetchCameras();
@@ -880,12 +881,40 @@ export default function Cameras() {
   }, [socket]);
 
   const fetchCameras = async () => {
+    if (!token) {
+      setCameras([]);
+      setLoading(false);
+      return;
+    }
+
+    const endpoints = ['/api/cameras', '/cameras'];
     try {
-      const res = await fetch('/api/cameras', { headers: { Authorization: `Bearer ${token}` } });
-      const data = await res.json();
-      setCameras(Array.isArray(data) ? data : []);
+      setCameraLoadError('');
+
+      let lastError = 'Unable to load cameras.';
+      for (const endpoint of endpoints) {
+        const res = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` } });
+        let data: any = null;
+        try {
+          data = await res.json();
+        } catch {
+          data = null;
+        }
+
+        if (res.ok && Array.isArray(data)) {
+          setCameras(data);
+          return;
+        }
+
+        lastError = data?.error || `${res.status} ${res.statusText}` || lastError;
+      }
+
+      setCameras([]);
+      setCameraLoadError(`Camera API failed: ${lastError}`);
     } catch (err) {
       console.error(err);
+      setCameras([]);
+      setCameraLoadError('Camera API request failed. Please check backend server and database.');
     } finally {
       setLoading(false);
     }
@@ -1169,6 +1198,21 @@ export default function Cameras() {
            </button>
         </div>
       </header>
+
+      {cameraLoadError && (
+        <div className="glass-card border border-rose-500/30 bg-rose-500/10 text-rose-300 text-xs font-mono p-4 flex items-center justify-between gap-3">
+          <span>{cameraLoadError}</span>
+          <button
+            onClick={() => {
+              setLoading(true);
+              fetchCameras();
+            }}
+            className="btn-action border-rose-400/50 text-rose-200 hover:bg-rose-500/20"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {showModal && (
         <div className="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center p-4">
