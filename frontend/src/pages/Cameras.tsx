@@ -131,6 +131,9 @@ const CameraFeed = ({
   const [analysisMessage, setAnalysisMessage] = useState<string | null>(null);
   const [streamSrc, setStreamSrc] = useState(normalizeStreamUrl(camera.ip_simulated));
   const [triedVideoFallback, setTriedVideoFallback] = useState(false);
+  const [faceDetected, setFaceDetected] = useState(false);
+  const [faceAppearances, setFaceAppearances] = useState(0);
+  const [lastFaceSeenAt, setLastFaceSeenAt] = useState<string>('Never');
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const faceModelRef = useRef<any>(null);
@@ -138,6 +141,7 @@ const CameraFeed = ({
   const animationRef = useRef<number | null>(null);
   const detectIntervalRef = useRef<number>(0);
   const modelsLoadingRef = useRef(false);
+  const faceVisibleRef = useRef(false);
   const uptimeSeconds = Math.max(
     0,
     Math.floor(
@@ -159,6 +163,10 @@ const CameraFeed = ({
     setStreamLive(false);
     setStreamSrc(normalizeStreamUrl(camera.ip_simulated));
     setTriedVideoFallback(false);
+    setFaceDetected(false);
+    setFaceAppearances(0);
+    setLastFaceSeenAt('Never');
+    faceVisibleRef.current = false;
   }, [camera.id, camera.ip_simulated]);
 
   useEffect(() => {
@@ -231,6 +239,20 @@ const CameraFeed = ({
           faceModelRef.current.estimateFaces(video, false),
           personModelRef.current.detect(video),
         ]);
+        const hasFace = (faces?.length ?? 0) > 0;
+        if (hasFace !== faceVisibleRef.current) {
+          faceVisibleRef.current = hasFace;
+          setFaceDetected(hasFace);
+          if (hasFace) {
+            setFaceAppearances((prev) => prev + 1);
+            setLastFaceSeenAt(new Date().toLocaleTimeString());
+          }
+        } else if (hasFace) {
+          setLastFaceSeenAt((prev) => {
+            const next = new Date().toLocaleTimeString();
+            return prev === next ? prev : next;
+          });
+        }
         if (!disposed) drawDetections(faces ?? [], objects ?? []);
       } catch (err) {
         if (!disposed) {
@@ -404,6 +426,14 @@ const CameraFeed = ({
                <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
                <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_50%,transparent_50%,rgba(0,0,0,0.4)_100%)]" />
                <div className="absolute inset-0 pointer-events-none mix-blend-overlay opacity-20 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] bg-repeat" />
+               <div className="absolute top-5 right-5 z-10 p-3 rounded-lg bg-black/70 border border-white/10">
+                 <p className="text-[9px] font-mono uppercase tracking-widest text-slate-400">Face Tracking</p>
+                 <p className={`text-[11px] font-mono font-bold mt-1 ${faceDetected ? 'text-emerald-400' : 'text-slate-500'}`}>
+                   {faceDetected ? 'Face Present' : 'No Face'}
+                 </p>
+                 <p className="text-[10px] text-slate-300 font-mono mt-1">Appearances: {faceAppearances}</p>
+                 <p className="text-[10px] text-slate-400 font-mono">Last Seen: {lastFaceSeenAt}</p>
+               </div>
                
                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 to-transparent p-6 flex flex-col justify-end translate-y-4 group-hover:translate-y-0 opacity-0 group-hover:opacity-100 transition-all duration-500">
                 <div className="flex justify-between items-end">
