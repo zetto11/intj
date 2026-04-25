@@ -52,6 +52,18 @@ function setupSqlite() {
       is_blocked INTEGER DEFAULT 0,
       last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS camera_telemetry (
+      camera_id INTEGER PRIMARY KEY,
+      signal_percent INTEGER DEFAULT 0,
+      uptime_seconds INTEGER DEFAULT 0,
+      uptime_hours REAL DEFAULT 0,
+      thermal_celsius REAL DEFAULT 0,
+      load_percent INTEGER DEFAULT 0,
+      retain_days_remaining INTEGER DEFAULT 0,
+      storage_used_tb REAL DEFAULT 0,
+      storage_node_label TEXT,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     CREATE TABLE IF NOT EXISTS access_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -105,6 +117,36 @@ function setupSqlite() {
       "INSERT INTO cameras (name, zone, ip_simulated, status, is_blocked) VALUES (?, ?, ?, ?, ?)"
     );
     cameras.forEach((cam: any[]) => insertCam.run(...cam));
+  }
+
+  const telemetryCount = sqliteDb.prepare("SELECT COUNT(*) as count FROM camera_telemetry").get().count;
+  if (telemetryCount === 0) {
+    const cameras = sqliteDb
+      .prepare("SELECT id, zone FROM cameras")
+      .all() as Array<{ id: number; zone: string }>;
+    const insertTelemetry = sqliteDb.prepare(
+      `INSERT INTO camera_telemetry
+       (camera_id, signal_percent, uptime_seconds, uptime_hours, thermal_celsius, load_percent, retain_days_remaining, storage_used_tb, storage_node_label)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    cameras.forEach((camera) => {
+      const zone = String(camera.zone || "").toLowerCase();
+      const signal = zone === "factory" ? 72 : zone === "warehouse" ? 80 : 90;
+      const thermal = zone === "factory" ? 58 : zone === "warehouse" ? 44 : 39;
+      const load = zone === "factory" ? 62 : zone === "warehouse" ? 41 : 29;
+      insertTelemetry.run(
+        camera.id,
+        signal,
+        0,
+        0,
+        thermal,
+        load,
+        30,
+        0.0012,
+        `Sigma-${((camera.id - 1) % 9) + 1}`
+      );
+    });
   }
 }
 
