@@ -15,7 +15,6 @@ const createCameraRouter = (io: Server) => {
   router.post("/:id/block", authenticateToken, isAdmin, blockCamera(io));
   router.post("/:id/capture", authenticateToken, captureCameraFrame);
   router.post("/:id/vector-analysis", authenticateToken, runVectorAnalysis);
-
   return router;
 };
 

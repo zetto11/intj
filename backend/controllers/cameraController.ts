@@ -25,6 +25,7 @@ const generateTelemetryByZone = (zone: string) => {
   };
 };
 
+
 export const getCameras = async (req: AuthRequest, res: Response) => {
   try {
     const [rows] = await db.execute(

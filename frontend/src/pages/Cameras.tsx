@@ -41,6 +41,96 @@ const formatUptimeHHMMSS = (totalSeconds: number) => {
   return `${hh}:${mm}:${ss}`;
 };
 
+let tfRuntimePromise: Promise<any> | null = null;
+let faceRuntimeModelPromise: Promise<any> | null = null;
+let personRuntimeModelPromise: Promise<any> | null = null;
+const dynamicImport = (moduleName: string) =>
+  new Function('name', 'return import(name);')(moduleName) as Promise<any>;
+
+const loadScriptOnce = (src: string, globalName: string) =>
+  new Promise<void>((resolve, reject) => {
+    if ((window as any)[globalName]) {
+      resolve();
+      return;
+    }
+
+    const existing = document.querySelector(`script[data-ai-src="${src}"]`) as HTMLScriptElement | null;
+    if (existing) {
+      existing.addEventListener('load', () => resolve(), { once: true });
+      existing.addEventListener('error', () => reject(new Error(`Failed to load ${src}`)), { once: true });
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.defer = true;
+    script.dataset.aiSrc = src;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(script);
+  });
+
+const loadTfRuntime = async () => {
+  if (!tfRuntimePromise) {
+    tfRuntimePromise = (async () => {
+      if ((window as any).tf) return (window as any).tf;
+      try {
+        const tfModule = await dynamicImport('@tensorflow/tfjs');
+        return tfModule;
+      } catch (_err) {
+        await loadScriptOnce('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js', 'tf');
+        return (window as any).tf;
+      }
+    })();
+  }
+  return tfRuntimePromise;
+};
+
+const loadFaceRuntimeModel = async () => {
+  if (!faceRuntimeModelPromise) {
+    faceRuntimeModelPromise = loadTfRuntime().then(async (tf) => {
+      await tf?.ready?.();
+      if ((window as any).blazeface?.load) {
+        return (window as any).blazeface.load();
+      }
+      try {
+        const faceModule = await dynamicImport('@tensorflow-models/blazeface');
+        return faceModule.load();
+      } catch (_err) {
+        await loadScriptOnce(
+          'https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.1.0/dist/blazeface.min.js',
+          'blazeface'
+        );
+        return (window as any).blazeface.load();
+      }
+    });
+  }
+  return faceRuntimeModelPromise;
+};
+
+const loadPersonRuntimeModel = async () => {
+  if (!personRuntimeModelPromise) {
+    personRuntimeModelPromise = loadTfRuntime().then(async (tf) => {
+      await tf?.ready?.();
+      if ((window as any).cocoSsd?.load) {
+        return (window as any).cocoSsd.load();
+      }
+      try {
+        const cocoModule = await dynamicImport('@tensorflow-models/coco-ssd');
+        return cocoModule.load();
+      } catch (_err) {
+        await loadScriptOnce(
+          'https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js',
+          'cocoSsd'
+        );
+        return (window as any).cocoSsd.load();
+      }
+    });
+  }
+  return personRuntimeModelPromise;
+};
+
 // Camera Feed Component
 const CameraFeed = ({
   camera,
@@ -66,11 +156,24 @@ const CameraFeed = ({
   const [analysisMessage, setAnalysisMessage] = useState<string | null>(null);
   const [streamSrc, setStreamSrc] = useState(normalizeStreamUrl(camera.ip_simulated));
   const [triedVideoFallback, setTriedVideoFallback] = useState(false);
+  const [streamRenderMode, setStreamRenderMode] = useState<'video' | 'image'>('video');
+  const [faceDetected, setFaceDetected] = useState(false);
+  const [faceAppearances, setFaceAppearances] = useState(0);
+  const [lastFaceSeenAt, setLastFaceSeenAt] = useState<string>('Never');
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const faceModelRef = useRef<any>(null);
+  const personModelRef = useRef<any>(null);
+  const animationRef = useRef<number | null>(null);
+  const detectIntervalRef = useRef<number>(0);
+  const modelsLoadingRef = useRef(false);
+  const faceVisibleRef = useRef(false);
   const uptimeSeconds = Math.max(
     0,
     Math.floor(
       Number(
-        camera.uptime_seconds ??
+        (camera as any).uptime_seconds ??
         ((camera.uptime_hours ?? 0) * 3600)
       )
     )
@@ -87,7 +190,172 @@ const CameraFeed = ({
     setStreamLive(false);
     setStreamSrc(normalizeStreamUrl(camera.ip_simulated));
     setTriedVideoFallback(false);
+    setStreamRenderMode('video');
+    setFaceDetected(false);
+    setFaceAppearances(0);
+    setLastFaceSeenAt('Never');
+    faceVisibleRef.current = false;
   }, [camera.id, camera.ip_simulated]);
+
+  useEffect(() => {
+    if (!canRenderStream) return;
+    const video = videoRef.current;
+    const image = imageRef.current;
+    const canvas = canvasRef.current;
+    const source = streamRenderMode === 'video' ? video : image;
+    if (!source || !canvas) return;
+
+    let disposed = false;
+
+    const syncCanvasToSource = () => {
+      const sourceWidth = streamRenderMode === 'video' ? video?.videoWidth : image?.naturalWidth;
+      const sourceHeight = streamRenderMode === 'video' ? video?.videoHeight : image?.naturalHeight;
+      if (!sourceWidth || !sourceHeight) return;
+      if (canvas.width !== sourceWidth || canvas.height !== sourceHeight) {
+        canvas.width = sourceWidth;
+        canvas.height = sourceHeight;
+      }
+    };
+
+    const drawDetections = (faces: any[], people: any[]) => {
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      syncCanvasToSource();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.lineWidth = 2;
+      ctx.font = '14px monospace';
+      ctx.textBaseline = 'top';
+
+      faces.forEach((face) => {
+        const topLeft = face?.topLeft;
+        const bottomRight = face?.bottomRight;
+        if (!topLeft || !bottomRight) return;
+        const [x1, y1] = topLeft as [number, number];
+        const [x2, y2] = bottomRight as [number, number];
+        const width = x2 - x1;
+        const height = y2 - y1;
+        const confidence = Math.max(0, Math.min(1, Number(face?.probability?.[0] ?? 0)));
+
+        ctx.strokeStyle = '#3b82f6';
+        ctx.fillStyle = '#3b82f6';
+        ctx.strokeRect(x1, y1, width, height);
+        ctx.fillText(`Face ${(confidence * 100).toFixed(1)}%`, x1, Math.max(0, y1 - 18));
+      });
+
+      people
+        .filter((item) => item?.class === 'person')
+        .forEach((person) => {
+          const [x, y, width, height] = person.bbox as [number, number, number, number];
+          const confidence = Math.max(0, Math.min(1, Number(person?.score ?? 0)));
+
+          ctx.strokeStyle = '#ef4444';
+          ctx.fillStyle = '#ef4444';
+          ctx.strokeRect(x, y, width, height);
+          ctx.fillText(`Person ${(confidence * 100).toFixed(1)}%`, x, Math.max(0, y - 18));
+        });
+    };
+
+    const detectLoop = async () => {
+      if (disposed) return;
+      animationRef.current = requestAnimationFrame(detectLoop);
+      const sourceWidth = streamRenderMode === 'video' ? video?.videoWidth : image?.naturalWidth;
+      const sourceHeight = streamRenderMode === 'video' ? video?.videoHeight : image?.naturalHeight;
+      if (!sourceWidth || !sourceHeight) return;
+
+      const now = Date.now();
+      if (now - detectIntervalRef.current < 150) return;
+      detectIntervalRef.current = now;
+
+      if (!faceModelRef.current || !personModelRef.current) return;
+
+      try {
+        const [faces, objects] = await Promise.all([
+          faceModelRef.current.estimateFaces(source, false),
+          personModelRef.current.detect(source),
+        ]);
+        const hasFace = (faces?.length ?? 0) > 0;
+        if (hasFace !== faceVisibleRef.current) {
+          faceVisibleRef.current = hasFace;
+          setFaceDetected(hasFace);
+          if (hasFace) {
+            setFaceAppearances((prev) => prev + 1);
+            setLastFaceSeenAt(new Date().toLocaleTimeString());
+          }
+        } else if (hasFace) {
+          setLastFaceSeenAt((prev) => {
+            const next = new Date().toLocaleTimeString();
+            return prev === next ? prev : next;
+          });
+        }
+        if (!disposed) drawDetections(faces ?? [], objects ?? []);
+      } catch (err) {
+        if (!disposed) {
+          console.error('Detection failed', err);
+        }
+      }
+    };
+
+    const startDetection = async () => {
+      if (modelsLoadingRef.current) return;
+      modelsLoadingRef.current = true;
+      try {
+        if (!faceModelRef.current) {
+          faceModelRef.current = await loadFaceRuntimeModel();
+        }
+        if (!personModelRef.current) {
+          personModelRef.current = await loadPersonRuntimeModel();
+        }
+      } catch (err) {
+        console.error('Model loading failed', err);
+      } finally {
+        modelsLoadingRef.current = false;
+      }
+      if (!disposed && animationRef.current == null) {
+        animationRef.current = requestAnimationFrame(detectLoop);
+      }
+    };
+
+    const handleLoadedMetadata = () => {
+      syncCanvasToSource();
+      startDetection();
+    };
+
+    const handleImageLoad = () => {
+      syncCanvasToSource();
+      startDetection();
+    };
+
+    if (streamRenderMode === 'video' && video) {
+      video.addEventListener('loadedmetadata', handleLoadedMetadata);
+      if (video.readyState >= 1) {
+        handleLoadedMetadata();
+      }
+    }
+    if (streamRenderMode === 'image' && image) {
+      image.addEventListener('load', handleImageLoad);
+      if (image.complete) {
+        handleImageLoad();
+      }
+    }
+
+    return () => {
+      disposed = true;
+      if (video) {
+        video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      }
+      if (image) {
+        image.removeEventListener('load', handleImageLoad);
+      }
+      if (animationRef.current != null) {
+        cancelAnimationFrame(animationRef.current);
+        animationRef.current = null;
+      }
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+    };
+  }, [canRenderStream, camera.id, streamRenderMode]);
 
   const handleCaptureFrame = async () => {
     try {
@@ -183,29 +451,55 @@ const CameraFeed = ({
             </div>
           ) : (
             <>
-               <img
-                 src={streamSrc}
-                 className="w-full h-full object-cover"
-                 alt={camera.name}
-                 onError={() => {
-                   if (!triedVideoFallback) {
+               {streamRenderMode === 'video' ? (
+                 <video
+                   ref={videoRef}
+                   src={streamSrc}
+                   className="w-full h-full object-cover"
+                   muted
+                   autoPlay
+                   playsInline
+                   onError={() => {
                      const fallback = normalizeStreamUrl(camera.ip_simulated, true);
-                     if (fallback && fallback !== streamSrc) {
+                     if (!triedVideoFallback && fallback && fallback !== streamSrc) {
                        setTriedVideoFallback(true);
                        setStreamSrc(fallback);
                        return;
                      }
-                   }
-                   setStreamLive(false);
-                   onStreamError();
-                 }}
-                 onLoad={() => {
-                   setStreamLive(true);
-                   onStreamLoad();
-                 }}
-               />
+                     setStreamRenderMode('image');
+                   }}
+                   onLoadedData={() => {
+                     setStreamLive(true);
+                     onStreamLoad();
+                   }}
+                 />
+               ) : (
+                 <img
+                   ref={imageRef}
+                   src={streamSrc}
+                   className="w-full h-full object-cover"
+                   alt={camera.name}
+                   onError={() => {
+                     setStreamLive(false);
+                     onStreamError();
+                   }}
+                   onLoad={() => {
+                     setStreamLive(true);
+                     onStreamLoad();
+                   }}
+                 />
+               )}
+               <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
                <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_50%,transparent_50%,rgba(0,0,0,0.4)_100%)]" />
                <div className="absolute inset-0 pointer-events-none mix-blend-overlay opacity-20 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] bg-repeat" />
+               <div className="absolute top-5 right-5 z-10 p-3 rounded-lg bg-black/70 border border-white/10">
+                 <p className="text-[9px] font-mono uppercase tracking-widest text-slate-400">Face Tracking</p>
+                 <p className={`text-[11px] font-mono font-bold mt-1 ${faceDetected ? 'text-emerald-400' : 'text-slate-500'}`}>
+                   {faceDetected ? 'Face Present' : 'No Face'}
+                 </p>
+                 <p className="text-[10px] text-slate-300 font-mono mt-1">Appearances: {faceAppearances}</p>
+                 <p className="text-[10px] text-slate-400 font-mono">Last Seen: {lastFaceSeenAt}</p>
+               </div>
                
                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 to-transparent p-6 flex flex-col justify-end translate-y-4 group-hover:translate-y-0 opacity-0 group-hover:opacity-100 transition-all duration-500">
                 <div className="flex justify-between items-end">
@@ -553,6 +847,7 @@ export default function Cameras() {
   const [detectedCameras, setDetectedCameras] = useState<Array<{ name: string; ip_simulated: string; zone: string }>>([]);
   const [scanMessage, setScanMessage] = useState('');
   const [scanStats, setScanStats] = useState<{ scanned: number; found: number; duration_ms: number } | null>(null);
+  const [cameraLoadError, setCameraLoadError] = useState('');
 
   useEffect(() => {
     fetchCameras();
@@ -586,12 +881,40 @@ export default function Cameras() {
   }, [socket]);
 
   const fetchCameras = async () => {
+    if (!token) {
+      setCameras([]);
+      setLoading(false);
+      return;
+    }
+
+    const endpoints = ['/api/cameras', '/cameras'];
     try {
-      const res = await fetch('/api/cameras', { headers: { Authorization: `Bearer ${token}` } });
-      const data = await res.json();
-      setCameras(Array.isArray(data) ? data : []);
+      setCameraLoadError('');
+
+      let lastError = 'Unable to load cameras.';
+      for (const endpoint of endpoints) {
+        const res = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` } });
+        let data: any = null;
+        try {
+          data = await res.json();
+        } catch {
+          data = null;
+        }
+
+        if (res.ok && Array.isArray(data)) {
+          setCameras(data);
+          return;
+        }
+
+        lastError = data?.error || `${res.status} ${res.statusText}` || lastError;
+      }
+
+      setCameras([]);
+      setCameraLoadError(`Camera API failed: ${lastError}`);
     } catch (err) {
       console.error(err);
+      setCameras([]);
+      setCameraLoadError('Camera API request failed. Please check backend server and database.');
     } finally {
       setLoading(false);
     }
@@ -875,6 +1198,21 @@ export default function Cameras() {
            </button>
         </div>
       </header>
+
+      {cameraLoadError && (
+        <div className="glass-card border border-rose-500/30 bg-rose-500/10 text-rose-300 text-xs font-mono p-4 flex items-center justify-between gap-3">
+          <span>{cameraLoadError}</span>
+          <button
+            onClick={() => {
+              setLoading(true);
+              fetchCameras();
+            }}
+            className="btn-action border-rose-400/50 text-rose-200 hover:bg-rose-500/20"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {showModal && (
         <div className="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center p-4">
