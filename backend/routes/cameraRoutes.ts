@@ -1,5 +1,5 @@
 import express from "express";
-import { getCameras, createCamera, discoverCameras, updateCamera, deleteCamera, restartCamera, blockCamera, captureCameraFrame, runVectorAnalysis } from "../controllers/cameraController";
+import { getCameras, createCamera, discoverCameras, updateCamera, deleteCamera, restartCamera, blockCamera, captureCameraFrame, runVectorAnalysis, proxyCameraStream } from "../controllers/cameraController";
 import { authenticateToken, isAdmin } from "../middleware/authMiddleware";
 import { Server } from "socket.io";
 
@@ -15,6 +15,7 @@ const createCameraRouter = (io: Server) => {
   router.post("/:id/block", authenticateToken, isAdmin, blockCamera(io));
   router.post("/:id/capture", authenticateToken, captureCameraFrame);
   router.post("/:id/vector-analysis", authenticateToken, runVectorAnalysis);
+  router.get("/:id/stream", authenticateToken, proxyCameraStream);
 
   return router;
 };

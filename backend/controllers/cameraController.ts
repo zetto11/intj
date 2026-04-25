@@ -4,6 +4,7 @@ import { db } from "../config/db";
 import { Server } from "socket.io";
 import fs from "fs/promises";
 import path from "path";
+import { Readable } from "stream";
 
 const randInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
 const randFloat = (min: number, max: number, decimals = 2) =>
@@ -23,6 +24,15 @@ const generateTelemetryByZone = (zone: string) => {
     storage_used_tb: Number((storageGb / 1024).toFixed(4)),
     storage_node_label: `Sigma-${randInt(1, 9)}`,
   };
+};
+
+const normalizeStreamUrl = (url: string, forceVideo = false) => {
+  const trimmed = String(url || "").trim();
+  if (!trimmed) return "";
+  if (!forceVideo) return trimmed;
+  if (/\/video\/?$/i.test(trimmed)) return trimmed.replace(/\/+$/, "");
+  if (/^https?:\/\/[^/]+$/i.test(trimmed)) return `${trimmed}/video`;
+  return trimmed;
 };
 
 export const getCameras = async (req: AuthRequest, res: Response) => {
@@ -360,6 +370,44 @@ export const runVectorAnalysis = async (req: AuthRequest, res: Response) => {
       },
       analyzed_at: new Date().toISOString()
     });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+export const proxyCameraStream = async (req: AuthRequest, res: Response) => {
+  const { id } = req.params;
+  const forceVideo = String(req.query.forceVideo || "") === "1";
+
+  try {
+    const [rows]: any = await db.execute(
+      "SELECT id, ip_simulated FROM cameras WHERE id = ? LIMIT 1",
+      [id]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "Camera not found" });
+    }
+
+    const upstreamUrl = normalizeStreamUrl(String(rows[0].ip_simulated || ""), forceVideo);
+    if (!upstreamUrl) {
+      return res.status(400).json({ error: "Camera stream URL is empty" });
+    }
+
+    const upstream = await fetch(upstreamUrl, { signal: AbortSignal.timeout(15000) });
+    if (!upstream.ok || !upstream.body) {
+      return res.status(502).json({ error: `Upstream stream failed (${upstream.status})` });
+    }
+
+    const contentType = upstream.headers.get("content-type") || "application/octet-stream";
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    res.setHeader("Connection", "keep-alive");
+
+    Readable.fromWeb(upstream.body as any).pipe(res);
+    return;
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }

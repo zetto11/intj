@@ -33,6 +33,9 @@ const normalizeStreamUrl = (url: string, forceVideo = false) => {
   return trimmed;
 };
 
+const buildProxyStreamUrl = (cameraId: number, forceVideo = false) =>
+  `/api/cameras/${cameraId}/stream${forceVideo ? '?forceVideo=1' : ''}`;
+
 const formatUptimeHHMMSS = (totalSeconds: number) => {
   const sec = Math.max(0, Math.floor(totalSeconds));
   const hh = String(Math.floor(sec / 3600)).padStart(2, '0');
@@ -80,12 +83,12 @@ const loadTfRuntime = async () => {
 
 const loadFaceRuntimeModel = async () => {
   if (!faceRuntimeModelPromise) {
-    faceRuntimeModelPromise = loadScriptOnce(
-      'https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.1.0/dist/blazeface.min.js',
-      'blazeface'
-    ).then(async () => {
-      const tf = await loadTfRuntime();
+    faceRuntimeModelPromise = loadTfRuntime().then(async (tf) => {
       await tf?.ready?.();
+      await loadScriptOnce(
+        'https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.1.0/dist/blazeface.min.js',
+        'blazeface'
+      );
       return (window as any).blazeface.load();
     });
   }
@@ -94,12 +97,12 @@ const loadFaceRuntimeModel = async () => {
 
 const loadPersonRuntimeModel = async () => {
   if (!personRuntimeModelPromise) {
-    personRuntimeModelPromise = loadScriptOnce(
-      'https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js',
-      'cocoSsd'
-    ).then(async () => {
-      const tf = await loadTfRuntime();
+    personRuntimeModelPromise = loadTfRuntime().then(async (tf) => {
       await tf?.ready?.();
+      await loadScriptOnce(
+        'https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js',
+        'cocoSsd'
+      );
       return (window as any).cocoSsd.load();
     });
   }
@@ -129,7 +132,7 @@ const CameraFeed = ({
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [captureMessage, setCaptureMessage] = useState<string | null>(null);
   const [analysisMessage, setAnalysisMessage] = useState<string | null>(null);
-  const [streamSrc, setStreamSrc] = useState(normalizeStreamUrl(camera.ip_simulated));
+  const [streamSrc, setStreamSrc] = useState(buildProxyStreamUrl(camera.id));
   const [triedVideoFallback, setTriedVideoFallback] = useState(false);
   const [streamRenderMode, setStreamRenderMode] = useState<'video' | 'image'>('video');
   const [faceDetected, setFaceDetected] = useState(false);
@@ -163,7 +166,7 @@ const CameraFeed = ({
 
   useEffect(() => {
     setStreamLive(false);
-    setStreamSrc(normalizeStreamUrl(camera.ip_simulated));
+    setStreamSrc(buildProxyStreamUrl(camera.id));
     setTriedVideoFallback(false);
     setStreamRenderMode('video');
     setFaceDetected(false);
@@ -435,7 +438,7 @@ const CameraFeed = ({
                    autoPlay
                    playsInline
                    onError={() => {
-                     const fallback = normalizeStreamUrl(camera.ip_simulated, true);
+                     const fallback = buildProxyStreamUrl(camera.id, true);
                      if (!triedVideoFallback && fallback && fallback !== streamSrc) {
                        setTriedVideoFallback(true);
                        setStreamSrc(fallback);
