@@ -15,7 +15,7 @@ const createCameraRouter = (io: Server) => {
   router.post("/:id/block", authenticateToken, isAdmin, blockCamera(io));
   router.post("/:id/capture", authenticateToken, captureCameraFrame);
   router.post("/:id/vector-analysis", authenticateToken, runVectorAnalysis);
-  router.get("/:id/stream", authenticateToken, proxyCameraStream);
+  router.get("/:id/stream", proxyCameraStream);
 
   return router;
 };
