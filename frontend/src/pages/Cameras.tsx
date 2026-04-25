@@ -33,9 +33,6 @@ const normalizeStreamUrl = (url: string, forceVideo = false) => {
   return trimmed;
 };
 
-const buildProxyStreamUrl = (cameraId: number, forceVideo = false) =>
-  `/api/cameras/${cameraId}/stream${forceVideo ? '?forceVideo=1' : ''}`;
-
 const formatUptimeHHMMSS = (totalSeconds: number) => {
   const sec = Math.max(0, Math.floor(totalSeconds));
   const hh = String(Math.floor(sec / 3600)).padStart(2, '0');
@@ -157,7 +154,7 @@ const CameraFeed = ({
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [captureMessage, setCaptureMessage] = useState<string | null>(null);
   const [analysisMessage, setAnalysisMessage] = useState<string | null>(null);
-  const [streamSrc, setStreamSrc] = useState(buildProxyStreamUrl(camera.id));
+  const [streamSrc, setStreamSrc] = useState(normalizeStreamUrl(camera.ip_simulated));
   const [triedVideoFallback, setTriedVideoFallback] = useState(false);
   const [streamRenderMode, setStreamRenderMode] = useState<'video' | 'image'>('video');
   const [faceDetected, setFaceDetected] = useState(false);
@@ -191,7 +188,7 @@ const CameraFeed = ({
 
   useEffect(() => {
     setStreamLive(false);
-    setStreamSrc(buildProxyStreamUrl(camera.id));
+    setStreamSrc(normalizeStreamUrl(camera.ip_simulated));
     setTriedVideoFallback(false);
     setStreamRenderMode('video');
     setFaceDetected(false);
@@ -463,7 +460,7 @@ const CameraFeed = ({
                    autoPlay
                    playsInline
                    onError={() => {
-                     const fallback = buildProxyStreamUrl(camera.id, true);
+                     const fallback = normalizeStreamUrl(camera.ip_simulated, true);
                      if (!triedVideoFallback && fallback && fallback !== streamSrc) {
                        setTriedVideoFallback(true);
                        setStreamSrc(fallback);
