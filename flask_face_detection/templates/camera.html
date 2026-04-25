@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IP Camera Face Detection</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      margin: 0;
+      padding: 24px;
+    }
+    .container {
+      max-width: 980px;
+      margin: 0 auto;
+    }
+    .panel {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .title {
+      margin: 0 0 8px;
+      font-size: 24px;
+    }
+    .stream {
+      width: 100%;
+      max-width: 960px;
+      border-radius: 10px;
+      border: 1px solid #334155;
+      background: #020617;
+      display: block;
+    }
+    .hint {
+      color: #94a3b8;
+      font-size: 14px;
+      margin-top: 10px;
+    }
+    code {
+      color: #93c5fd;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="panel">
+      <h1 class="title">Real-time Face Detection (Flask + OpenCV)</h1>
+      <img class="stream" src="/video_feed" alt="Face detection stream" />
+      <p class="hint">Source stream URL: <code>{{ stream_url }}</code></p>
+      <p class="hint">Detected faces are shown with green boxes and the label <code>Face</code>.</p>
+    </div>
+  </div>
+</body>
+</html>
