@@ -1,0 +1,29 @@
+{
+  "name": "cctv-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node ../frontend/node_modules/tsx/dist/cli.mjs server.ts",
+    "start": "NODE_ENV=production node ../frontend/node_modules/tsx/dist/cli.mjs server.ts"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "mysql2": "^3.15.3",
+    "socket.io": "^4.8.3",
+    "jsonwebtoken": "^9.0.3",
+    "better-sqlite3": "^12.9.0"
+  },
+  "description": "",
+  "main": "index.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Secure CCTV Command Center",
+  "description": "Professional industrial IP camera management dashboard with simulated real-time monitoring, RBAC, and anomaly detection.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["Security Monitoring", "Network Status", "Alert Management"]
+}
