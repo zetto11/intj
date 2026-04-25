@@ -22,33 +22,20 @@ export interface TrackingTarget {
   h: number;
 }
 
+interface NormalizedBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  confidence: number;
+  label: string;
+}
+
 const randInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
-const randFloat = (min: number, max: number) => Math.random() * (max - min) + min;
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 
 const trackState = new Map<number, { people: TrackingTarget[]; faces: TrackingTarget[] }>();
-
-const deriveDetectionFromFrame = (bytes: Uint8Array) => {
-  if (!bytes?.length) {
-    return { person_detected: false, person_count: 0, face_detected: false };
-  }
-
-  let checksum = 0;
-  const stride = Math.max(1, Math.floor(bytes.length / 4096));
-  for (let i = 0; i < bytes.length; i += stride) {
-    checksum = (checksum + bytes[i] * ((i % 17) + 1)) % 1000003;
-  }
-
-  const motionScore = (checksum % 100) / 100;
-  const confidenceBias = ((checksum >> 3) % 100) / 100;
-
-  const person_detected = motionScore > 0.32;
-  const maxPeople = confidenceBias > 0.9 ? 5 : confidenceBias > 0.75 ? 4 : 3;
-  const person_count = person_detected ? Math.max(1, Math.min(maxPeople, Math.round(motionScore * maxPeople + 0.2))) : 0;
-  const face_detected = person_detected && ((checksum % 10) > 4 || person_count === 1);
-
-  return { person_detected, person_count, face_detected };
-};
+let missingDetectorWarningPrinted = false;
 
 const getSnapshotUrl = (streamUrl: string) => {
   const value = String(streamUrl || "").trim();
@@ -66,6 +53,103 @@ const fetchFrame = async (snapshotUrl: string): Promise<Uint8Array | null> => {
   } catch {
     return null;
   }
+};
+
+const normalizeCandidate = (candidate: any): NormalizedBox | null => {
+  if (!candidate || typeof candidate !== "object") return null;
+
+  const left = Number(candidate.left ?? candidate.xmin ?? candidate.x1 ?? candidate.x ?? candidate.bbox?.[0]);
+  const top = Number(candidate.top ?? candidate.ymin ?? candidate.y1 ?? candidate.y ?? candidate.bbox?.[1]);
+  const width = Number(candidate.width ?? candidate.w ?? candidate.xmax - candidate.xmin ?? candidate.x2 - candidate.x1 ?? candidate.bbox?.[2]);
+  const height = Number(candidate.height ?? candidate.h ?? candidate.ymax - candidate.ymin ?? candidate.y2 - candidate.y1 ?? candidate.bbox?.[3]);
+
+  if (![left, top, width, height].every(Number.isFinite)) return null;
+
+  let x = left;
+  let y = top;
+  let w = width;
+  let h = height;
+
+  const sourceW = Number(candidate.image_width ?? candidate.frame_width ?? candidate.source_width ?? candidate.width_px);
+  const sourceH = Number(candidate.image_height ?? candidate.frame_height ?? candidate.source_height ?? candidate.height_px);
+  const looksPixelBased = [x, y, w, h].some((n) => n > 1);
+  if (looksPixelBased && Number.isFinite(sourceW) && Number.isFinite(sourceH) && sourceW > 0 && sourceH > 0) {
+    x = x / sourceW;
+    y = y / sourceH;
+    w = w / sourceW;
+    h = h / sourceH;
+  }
+
+  const normalized = {
+    x: clamp(x, 0, 1),
+    y: clamp(y, 0, 1),
+    w: clamp(w, 0.02, 1),
+    h: clamp(h, 0.02, 1),
+    confidence: clamp(Number(candidate.confidence ?? candidate.score ?? 0.8), 0, 1),
+    label: String(candidate.class ?? candidate.label ?? candidate.name ?? "unknown").toLowerCase(),
+  };
+
+  if ([normalized.x, normalized.y, normalized.w, normalized.h].some((n) => !Number.isFinite(n))) return null;
+  if (normalized.w <= 0.02 || normalized.h <= 0.02) return null;
+  if (normalized.x >= 1 || normalized.y >= 1) return null;
+
+  return normalized;
+};
+
+const parseDetectorResponse = (json: any): NormalizedBox[] => {
+  const candidates = json?.predictions || json?.detections || json?.results || json?.objects || [];
+  if (!Array.isArray(candidates)) return [];
+  return candidates.map(normalizeCandidate).filter(Boolean) as NormalizedBox[];
+};
+
+const callDetectionApi = async (url: string, frame: Uint8Array): Promise<NormalizedBox[]> => {
+  if (!url) return [];
+  try {
+    const blob = new Blob([frame], { type: "image/jpeg" });
+    const form = new FormData();
+    form.append("image", blob, "frame.jpg");
+
+    const res = await fetch(url, {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(4500),
+    });
+
+    if (!res.ok) return [];
+    const json = await res.json();
+    return parseDetectorResponse(json);
+  } catch {
+    return [];
+  }
+};
+
+const smoothTarget = (prev: TrackingTarget | null, next: TrackingTarget): TrackingTarget => {
+  if (!prev) return next;
+  return {
+    id: next.id,
+    x: clamp((prev.x * 0.55) + (next.x * 0.45), 0.01, 0.95),
+    y: clamp((prev.y * 0.55) + (next.y * 0.45), 0.01, 0.95),
+    w: clamp((prev.w * 0.6) + (next.w * 0.4), 0.03, 0.9),
+    h: clamp((prev.h * 0.6) + (next.h * 0.4), 0.03, 0.9),
+  };
+};
+
+const sortTracks = (tracks: TrackingTarget[]) => [...tracks].sort((a, b) => a.x - b.x);
+
+const tracksFromBoxes = (boxes: NormalizedBox[], previous: TrackingTarget[] | undefined): TrackingTarget[] => {
+  const sortedBoxes = [...boxes].sort((a, b) => a.x - b.x);
+  const prevSorted = sortTracks(previous || []);
+
+  return sortedBoxes.map((box, idx) => {
+    const raw: TrackingTarget = {
+      id: idx,
+      x: clamp(box.x, 0, 0.98),
+      y: clamp(box.y, 0, 0.98),
+      w: clamp(box.w, 0.03, 0.9),
+      h: clamp(box.h, 0.03, 0.9),
+    };
+    return smoothTarget(prevSorted[idx] || null, raw);
+  });
 };
 
 const persistDetection = async (payload: DetectionPayload, previous?: Partial<DetectionPayload>) => {
@@ -121,118 +205,96 @@ const persistDetection = async (payload: DetectionPayload, previous?: Partial<De
   return changed;
 };
 
-const createBaseTarget = (id = 0): TrackingTarget => ({
-  id,
-  x: randFloat(0.15, 0.72),
-  y: randFloat(0.12, 0.68),
-  w: randFloat(0.16, 0.26),
-  h: randFloat(0.28, 0.42),
-});
-
-const smoothTarget = (prev: TrackingTarget | null, next: TrackingTarget): TrackingTarget => {
-  if (!prev) return next;
-  return {
-    id: next.id,
-    x: clamp((prev.x * 0.7) + (next.x * 0.3), 0.05, 0.88),
-    y: clamp((prev.y * 0.7) + (next.y * 0.3), 0.05, 0.88),
-    w: clamp((prev.w * 0.75) + (next.w * 0.25), 0.12, 0.35),
-    h: clamp((prev.h * 0.75) + (next.h * 0.25), 0.18, 0.5),
-  };
-};
-
-const buildTrackingTargets = (cameraId: number, personCount: number, faceDetected: boolean) => {
-  const prev = trackState.get(cameraId);
-  const people: TrackingTarget[] = [];
-  for (let idx = 0; idx < personCount; idx += 1) {
-    const previous = prev?.people?.[idx] || null;
-    const base = previous
-      ? {
-          id: idx,
-          x: clamp(previous.x + randFloat(-0.04, 0.04), 0.05, 0.86),
-          y: clamp(previous.y + randFloat(-0.04, 0.04), 0.05, 0.84),
-          w: clamp(previous.w + randFloat(-0.02, 0.02), 0.14, 0.34),
-          h: clamp(previous.h + randFloat(-0.02, 0.02), 0.22, 0.5),
-        }
-      : createBaseTarget(idx);
-    people.push(smoothTarget(previous, base));
-  }
-
-  const faces: TrackingTarget[] = [];
-  if (faceDetected && people.length) {
-    const faceCount = Math.max(1, Math.min(people.length, randInt(1, people.length)));
-    for (let idx = 0; idx < faceCount; idx += 1) {
-      const person = people[idx];
-      const previousFace = prev?.faces?.[idx] || null;
-      const baseFace: TrackingTarget = {
-        id: idx,
-        x: clamp(person.x + randFloat(0.04, Math.max(0.08, person.w * 0.4)), 0.05, 0.92),
-        y: clamp(person.y + randFloat(0.03, Math.max(0.07, person.h * 0.25)), 0.05, 0.92),
-        w: clamp(person.w * randFloat(0.32, 0.45), 0.08, 0.16),
-        h: clamp(person.h * randFloat(0.28, 0.38), 0.1, 0.18),
-      };
-      faces.push(smoothTarget(previousFace, baseFace));
-    }
-  }
+const buildPayloadFromDetections = (
+  camera: any,
+  personDetections: NormalizedBox[],
+  faceDetections: NormalizedBox[]
+): DetectionPayload => {
+  const previous = trackState.get(Number(camera.id));
+  const people = tracksFromBoxes(personDetections, previous?.people);
+  const faces = tracksFromBoxes(faceDetections, previous?.faces);
 
   if (people.length || faces.length) {
-    trackState.set(cameraId, {
-      people,
-      faces,
-    });
+    trackState.set(Number(camera.id), { people, faces });
   } else {
-    trackState.delete(cameraId);
+    trackState.delete(Number(camera.id));
   }
 
+  const personCount = people.length;
+  const personDetected = personCount > 0;
+  const faceDetected = faces.length > 0;
+  const alert_level: DetectionPayload["alert_level"] = !personDetected
+    ? "none"
+    : personCount >= 2
+      ? "high"
+      : "medium";
+
   return {
+    camera_id: Number(camera.id),
+    person_detected: personDetected,
+    person_count: personCount,
+    face_detected: faceDetected,
+    alert_level,
     person_track: people[0] || null,
     face_track: faces[0] || null,
     person_tracks: people,
     face_tracks: faces,
+    detected_at: new Date().toISOString(),
   };
 };
 
 export const runCameraDetection = async (camera: any): Promise<DetectionPayload> => {
+  if (camera.is_blocked || camera.status !== "online") {
+    trackState.delete(Number(camera.id));
+    return {
+      camera_id: Number(camera.id),
+      person_detected: false,
+      person_count: 0,
+      face_detected: false,
+      alert_level: "none",
+      person_track: null,
+      face_track: null,
+      person_tracks: [],
+      face_tracks: [],
+      detected_at: new Date().toISOString(),
+    };
+  }
+
   const snapshotUrl = getSnapshotUrl(camera.ip_simulated);
   const frame = snapshotUrl ? await fetchFrame(snapshotUrl) : null;
-
-  let detection = frame ? deriveDetectionFromFrame(frame) : {
-    person_detected: Math.random() > 0.65,
-    person_count: 0,
-    face_detected: false,
-  };
-
-  if (!frame && detection.person_detected) {
-    detection.person_count = randInt(1, 3);
-    detection.face_detected = Math.random() > 0.45;
+  if (!frame) {
+    trackState.delete(Number(camera.id));
+    return {
+      camera_id: Number(camera.id),
+      person_detected: false,
+      person_count: 0,
+      face_detected: false,
+      alert_level: "none",
+      person_track: null,
+      face_track: null,
+      person_tracks: [],
+      face_tracks: [],
+      detected_at: new Date().toISOString(),
+    };
   }
 
-  if (camera.is_blocked || camera.status !== "online") {
-    detection = { person_detected: false, person_count: 0, face_detected: false };
+  const personApi = String(process.env.AI_PERSON_DETECTOR_URL || "").trim();
+  const faceApi = String(process.env.AI_FACE_DETECTOR_URL || personApi).trim();
+
+  if (!personApi && !missingDetectorWarningPrinted) {
+    missingDetectorWarningPrinted = true;
+    console.warn("[AI] No detector URL configured. Set AI_PERSON_DETECTOR_URL (and optionally AI_FACE_DETECTOR_URL) to enable real detection.");
   }
 
-  const alert_level: DetectionPayload["alert_level"] = !detection.person_detected
-    ? "none"
-    : detection.person_count >= 2
-      ? "high"
-      : "medium";
-  const tracking = buildTrackingTargets(
-    Number(camera.id),
-    detection.person_count,
-    detection.face_detected
-  );
+  const [personCandidates, faceCandidates] = await Promise.all([
+    callDetectionApi(personApi, frame),
+    callDetectionApi(faceApi, frame),
+  ]);
 
-  return {
-    camera_id: Number(camera.id),
-    person_detected: detection.person_detected,
-    person_count: detection.person_count,
-    face_detected: detection.face_detected,
-    alert_level,
-    person_track: tracking.person_track,
-    face_track: tracking.face_track,
-    person_tracks: tracking.person_tracks,
-    face_tracks: tracking.face_tracks,
-    detected_at: new Date().toISOString(),
-  };
+  const personDetections = personCandidates.filter((p) => ["person", "human", "body"].includes(p.label));
+  const faceDetections = faceCandidates.filter((f) => ["face", "person_face", "head"].includes(f.label));
+
+  return buildPayloadFromDetections(camera, personDetections, faceDetections);
 };
 
 export const startAiVisionSimulation = (io: Server) => {
