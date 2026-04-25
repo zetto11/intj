@@ -7,10 +7,23 @@ export interface DetectionPayload {
   person_count: number;
   face_detected: boolean;
   alert_level: "none" | "medium" | "high";
+  person_track: TrackingTarget | null;
+  face_track: TrackingTarget | null;
   detected_at: string;
 }
 
+export interface TrackingTarget {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 const randInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
+const randFloat = (min: number, max: number) => Math.random() * (max - min) + min;
+const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+
+const trackState = new Map<number, { person: TrackingTarget; face: TrackingTarget }>();
 
 const deriveDetectionFromFrame = (bytes: Uint8Array) => {
   if (!bytes?.length) {
@@ -105,6 +118,48 @@ const persistDetection = async (payload: DetectionPayload, previous?: Partial<De
   return changed;
 };
 
+const createBaseTarget = (): TrackingTarget => ({
+  x: randFloat(0.15, 0.72),
+  y: randFloat(0.12, 0.68),
+  w: randFloat(0.16, 0.26),
+  h: randFloat(0.28, 0.42),
+});
+
+const smoothTarget = (prev: TrackingTarget | null, next: TrackingTarget): TrackingTarget => {
+  if (!prev) return next;
+  return {
+    x: clamp((prev.x * 0.7) + (next.x * 0.3), 0.05, 0.88),
+    y: clamp((prev.y * 0.7) + (next.y * 0.3), 0.05, 0.88),
+    w: clamp((prev.w * 0.75) + (next.w * 0.25), 0.12, 0.35),
+    h: clamp((prev.h * 0.75) + (next.h * 0.25), 0.18, 0.5),
+  };
+};
+
+const buildTrackingTargets = (cameraId: number, personDetected: boolean, faceDetected: boolean) => {
+  const prev = trackState.get(cameraId);
+  const personBase = createBaseTarget();
+  const nextPerson = personDetected ? smoothTarget(prev?.person || null, personBase) : null;
+
+  const faceBase: TrackingTarget = {
+    x: clamp((nextPerson?.x ?? personBase.x) + randFloat(0.04, 0.1), 0.05, 0.92),
+    y: clamp((nextPerson?.y ?? personBase.y) + randFloat(0.03, 0.09), 0.05, 0.92),
+    w: randFloat(0.08, 0.14),
+    h: randFloat(0.1, 0.16),
+  };
+  const nextFace = personDetected && faceDetected ? smoothTarget(prev?.face || null, faceBase) : null;
+
+  if (nextPerson || nextFace) {
+    trackState.set(cameraId, {
+      person: nextPerson || personBase,
+      face: nextFace || faceBase,
+    });
+  } else {
+    trackState.delete(cameraId);
+  }
+
+  return { person_track: nextPerson, face_track: nextFace };
+};
+
 export const runCameraDetection = async (camera: any): Promise<DetectionPayload> => {
   const snapshotUrl = getSnapshotUrl(camera.ip_simulated);
   const frame = snapshotUrl ? await fetchFrame(snapshotUrl) : null;
@@ -129,6 +184,11 @@ export const runCameraDetection = async (camera: any): Promise<DetectionPayload>
     : detection.person_count >= 2
       ? "high"
       : "medium";
+  const tracking = buildTrackingTargets(
+    Number(camera.id),
+    detection.person_detected,
+    detection.face_detected
+  );
 
   return {
     camera_id: Number(camera.id),
@@ -136,6 +196,8 @@ export const runCameraDetection = async (camera: any): Promise<DetectionPayload>
     person_count: detection.person_count,
     face_detected: detection.face_detected,
     alert_level,
+    person_track: tracking.person_track,
+    face_track: tracking.face_track,
     detected_at: new Date().toISOString(),
   };
 };

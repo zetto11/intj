@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../App';
-import { Camera } from '../types';
+import { Camera, CameraTrack } from '../types';
 import { 
   Search, 
   Filter, 
@@ -49,6 +49,14 @@ const normalizeDetection = (camera: Camera) => {
   return { personDetected, personCount, faceDetected, alertLevel };
 };
 
+const hasValidTrack = (track?: CameraTrack | null) => (
+  !!track
+  && Number.isFinite(track.x)
+  && Number.isFinite(track.y)
+  && Number.isFinite(track.w)
+  && Number.isFinite(track.h)
+);
+
 // Camera Feed Component
 const CameraFeed = ({
   camera,
@@ -84,6 +92,8 @@ const CameraFeed = ({
     )
   );
   const detection = normalizeDetection(camera);
+  const personTrack = detection.personDetected && hasValidTrack(camera.person_track) ? camera.person_track : null;
+  const faceTrack = detection.faceDetected && hasValidTrack(camera.face_track) ? camera.face_track : null;
 
   useEffect(() => {
     const timer = setInterval(() => setTimestamp(new Date().toLocaleTimeString()), 1000);
@@ -213,6 +223,36 @@ const CameraFeed = ({
                    onStreamLoad();
                  }}
                />
+
+               {personTrack && (
+                 <motion.div
+                   initial={false}
+                   animate={{
+                     left: `${personTrack.x * 100}%`,
+                     top: `${personTrack.y * 100}%`,
+                     width: `${personTrack.w * 100}%`,
+                     height: `${personTrack.h * 100}%`,
+                     opacity: 1
+                   }}
+                   transition={{ duration: 0.35, ease: 'easeOut' }}
+                   className={`absolute rounded-2xl border-2 ${detection.alertLevel === 'high' ? 'border-rose-400' : 'border-emerald-400'} pointer-events-none shadow-[0_0_22px_rgba(16,185,129,0.45)] z-20`}
+                 />
+               )}
+
+               {faceTrack && (
+                 <motion.div
+                   initial={false}
+                   animate={{
+                     left: `${faceTrack.x * 100}%`,
+                     top: `${faceTrack.y * 100}%`,
+                     width: `${faceTrack.w * 100}%`,
+                     height: `${faceTrack.h * 100}%`,
+                     opacity: 1
+                   }}
+                   transition={{ duration: 0.28, ease: 'easeOut' }}
+                   className="absolute rounded-full border-2 border-blue-300 pointer-events-none shadow-[0_0_20px_rgba(59,130,246,0.6)] z-20"
+                 />
+               )}
                <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_50%,transparent_50%,rgba(0,0,0,0.4)_100%)]" />
                <div className="absolute inset-0 pointer-events-none mix-blend-overlay opacity-20 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] bg-repeat" />
                
@@ -646,6 +686,8 @@ export default function Cameras() {
                 face_detected: !!payload.face_detected,
                 alert_level: payload.alert_level || 'none',
                 last_analyzed_at: payload.detected_at,
+                person_track: payload.person_track || null,
+                face_track: payload.face_track || null,
               }
             : cam
         )

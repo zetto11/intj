@@ -20,8 +20,17 @@ export interface Camera {
   face_detected?: boolean | null;
   alert_level?: 'none' | 'medium' | 'high' | null;
   last_analyzed_at?: string | null;
+  person_track?: CameraTrack | null;
+  face_track?: CameraTrack | null;
   lat?: number;
   lng?: number;
+}
+
+export interface CameraTrack {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
 export interface AccessPoint {
