@@ -41,6 +41,71 @@ const formatUptimeHHMMSS = (totalSeconds: number) => {
   return `${hh}:${mm}:${ss}`;
 };
 
+let tfRuntimePromise: Promise<any> | null = null;
+let faceRuntimeModelPromise: Promise<any> | null = null;
+let personRuntimeModelPromise: Promise<any> | null = null;
+
+const loadScriptOnce = (src: string, globalName: string) =>
+  new Promise<void>((resolve, reject) => {
+    if ((window as any)[globalName]) {
+      resolve();
+      return;
+    }
+
+    const existing = document.querySelector(`script[data-ai-src="${src}"]`) as HTMLScriptElement | null;
+    if (existing) {
+      existing.addEventListener('load', () => resolve(), { once: true });
+      existing.addEventListener('error', () => reject(new Error(`Failed to load ${src}`)), { once: true });
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.defer = true;
+    script.dataset.aiSrc = src;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(script);
+  });
+
+const loadTfRuntime = async () => {
+  if (!tfRuntimePromise) {
+    tfRuntimePromise = loadScriptOnce('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js', 'tf').then(
+      () => (window as any).tf
+    );
+  }
+  return tfRuntimePromise;
+};
+
+const loadFaceRuntimeModel = async () => {
+  if (!faceRuntimeModelPromise) {
+    faceRuntimeModelPromise = loadScriptOnce(
+      'https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.1.0/dist/blazeface.min.js',
+      'blazeface'
+    ).then(async () => {
+      const tf = await loadTfRuntime();
+      await tf?.ready?.();
+      return (window as any).blazeface.load();
+    });
+  }
+  return faceRuntimeModelPromise;
+};
+
+const loadPersonRuntimeModel = async () => {
+  if (!personRuntimeModelPromise) {
+    personRuntimeModelPromise = loadScriptOnce(
+      'https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js',
+      'cocoSsd'
+    ).then(async () => {
+      const tf = await loadTfRuntime();
+      await tf?.ready?.();
+      return (window as any).cocoSsd.load();
+    });
+  }
+  return personRuntimeModelPromise;
+};
+
 // Camera Feed Component
 const CameraFeed = ({
   camera,
@@ -66,11 +131,18 @@ const CameraFeed = ({
   const [analysisMessage, setAnalysisMessage] = useState<string | null>(null);
   const [streamSrc, setStreamSrc] = useState(normalizeStreamUrl(camera.ip_simulated));
   const [triedVideoFallback, setTriedVideoFallback] = useState(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const faceModelRef = useRef<any>(null);
+  const personModelRef = useRef<any>(null);
+  const animationRef = useRef<number | null>(null);
+  const detectIntervalRef = useRef<number>(0);
+  const modelsLoadingRef = useRef(false);
   const uptimeSeconds = Math.max(
     0,
     Math.floor(
       Number(
-        camera.uptime_seconds ??
+        (camera as any).uptime_seconds ??
         ((camera.uptime_hours ?? 0) * 3600)
       )
     )
@@ -88,6 +160,128 @@ const CameraFeed = ({
     setStreamSrc(normalizeStreamUrl(camera.ip_simulated));
     setTriedVideoFallback(false);
   }, [camera.id, camera.ip_simulated]);
+
+  useEffect(() => {
+    if (!canRenderStream) return;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+
+    let disposed = false;
+
+    const syncCanvasToVideo = () => {
+      if (!video.videoWidth || !video.videoHeight) return;
+      if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+      }
+    };
+
+    const drawDetections = (faces: any[], people: any[]) => {
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      syncCanvasToVideo();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.lineWidth = 2;
+      ctx.font = '14px monospace';
+      ctx.textBaseline = 'top';
+
+      faces.forEach((face) => {
+        const topLeft = face?.topLeft;
+        const bottomRight = face?.bottomRight;
+        if (!topLeft || !bottomRight) return;
+        const [x1, y1] = topLeft as [number, number];
+        const [x2, y2] = bottomRight as [number, number];
+        const width = x2 - x1;
+        const height = y2 - y1;
+        const confidence = Math.max(0, Math.min(1, Number(face?.probability?.[0] ?? 0)));
+
+        ctx.strokeStyle = '#3b82f6';
+        ctx.fillStyle = '#3b82f6';
+        ctx.strokeRect(x1, y1, width, height);
+        ctx.fillText(`Face ${(confidence * 100).toFixed(1)}%`, x1, Math.max(0, y1 - 18));
+      });
+
+      people
+        .filter((item) => item?.class === 'person')
+        .forEach((person) => {
+          const [x, y, width, height] = person.bbox as [number, number, number, number];
+          const confidence = Math.max(0, Math.min(1, Number(person?.score ?? 0)));
+
+          ctx.strokeStyle = '#ef4444';
+          ctx.fillStyle = '#ef4444';
+          ctx.strokeRect(x, y, width, height);
+          ctx.fillText(`Person ${(confidence * 100).toFixed(1)}%`, x, Math.max(0, y - 18));
+        });
+    };
+
+    const detectLoop = async () => {
+      if (disposed) return;
+      animationRef.current = requestAnimationFrame(detectLoop);
+      if (!video.videoWidth || !video.videoHeight) return;
+
+      const now = Date.now();
+      if (now - detectIntervalRef.current < 150) return;
+      detectIntervalRef.current = now;
+
+      if (!faceModelRef.current || !personModelRef.current) return;
+
+      try {
+        const [faces, objects] = await Promise.all([
+          faceModelRef.current.estimateFaces(video, false),
+          personModelRef.current.detect(video),
+        ]);
+        if (!disposed) drawDetections(faces ?? [], objects ?? []);
+      } catch (err) {
+        if (!disposed) {
+          console.error('Detection failed', err);
+        }
+      }
+    };
+
+    const startDetection = async () => {
+      if (modelsLoadingRef.current) return;
+      modelsLoadingRef.current = true;
+      try {
+        if (!faceModelRef.current) {
+          faceModelRef.current = await loadFaceRuntimeModel();
+        }
+        if (!personModelRef.current) {
+          personModelRef.current = await loadPersonRuntimeModel();
+        }
+      } catch (err) {
+        console.error('Model loading failed', err);
+      } finally {
+        modelsLoadingRef.current = false;
+      }
+      if (!disposed && animationRef.current == null) {
+        animationRef.current = requestAnimationFrame(detectLoop);
+      }
+    };
+
+    const handleLoadedMetadata = () => {
+      syncCanvasToVideo();
+      startDetection();
+    };
+
+    video.addEventListener('loadedmetadata', handleLoadedMetadata);
+    if (video.readyState >= 1) {
+      handleLoadedMetadata();
+    }
+
+    return () => {
+      disposed = true;
+      video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      if (animationRef.current != null) {
+        cancelAnimationFrame(animationRef.current);
+        animationRef.current = null;
+      }
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+    };
+  }, [canRenderStream, camera.id]);
 
   const handleCaptureFrame = async () => {
     try {
@@ -183,10 +377,13 @@ const CameraFeed = ({
             </div>
           ) : (
             <>
-               <img
+               <video
+                 ref={videoRef}
                  src={streamSrc}
                  className="w-full h-full object-cover"
-                 alt={camera.name}
+                 muted
+                 autoPlay
+                 playsInline
                  onError={() => {
                    if (!triedVideoFallback) {
                      const fallback = normalizeStreamUrl(camera.ip_simulated, true);
@@ -199,11 +396,12 @@ const CameraFeed = ({
                    setStreamLive(false);
                    onStreamError();
                  }}
-                 onLoad={() => {
+                 onLoadedData={() => {
                    setStreamLive(true);
                    onStreamLoad();
                  }}
                />
+               <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
                <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_50%,transparent_50%,rgba(0,0,0,0.4)_100%)]" />
                <div className="absolute inset-0 pointer-events-none mix-blend-overlay opacity-20 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] bg-repeat" />
                
