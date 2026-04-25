@@ -394,7 +394,7 @@ export const proxyCameraStream = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "Camera stream URL is empty" });
     }
 
-    const upstream = await fetch(upstreamUrl, { signal: AbortSignal.timeout(15000) });
+    const upstream = await fetch(upstreamUrl);
     if (!upstream.ok || !upstream.body) {
       return res.status(502).json({ error: `Upstream stream failed (${upstream.status})` });
     }
