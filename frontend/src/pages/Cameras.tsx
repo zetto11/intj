@@ -47,6 +47,8 @@ const formatUptimeHHMMSS = (totalSeconds: number) => {
 let tfRuntimePromise: Promise<any> | null = null;
 let faceRuntimeModelPromise: Promise<any> | null = null;
 let personRuntimeModelPromise: Promise<any> | null = null;
+const dynamicImport = (moduleName: string) =>
+  new Function('name', 'return import(name);')(moduleName) as Promise<any>;
 
 const loadScriptOnce = (src: string, globalName: string) =>
   new Promise<void>((resolve, reject) => {
@@ -74,9 +76,16 @@ const loadScriptOnce = (src: string, globalName: string) =>
 
 const loadTfRuntime = async () => {
   if (!tfRuntimePromise) {
-    tfRuntimePromise = loadScriptOnce('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js', 'tf').then(
-      () => (window as any).tf
-    );
+    tfRuntimePromise = (async () => {
+      if ((window as any).tf) return (window as any).tf;
+      try {
+        const tfModule = await dynamicImport('@tensorflow/tfjs');
+        return tfModule;
+      } catch (_err) {
+        await loadScriptOnce('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js', 'tf');
+        return (window as any).tf;
+      }
+    })();
   }
   return tfRuntimePromise;
 };
@@ -85,11 +94,19 @@ const loadFaceRuntimeModel = async () => {
   if (!faceRuntimeModelPromise) {
     faceRuntimeModelPromise = loadTfRuntime().then(async (tf) => {
       await tf?.ready?.();
-      await loadScriptOnce(
-        'https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.1.0/dist/blazeface.min.js',
-        'blazeface'
-      );
-      return (window as any).blazeface.load();
+      if ((window as any).blazeface?.load) {
+        return (window as any).blazeface.load();
+      }
+      try {
+        const faceModule = await dynamicImport('@tensorflow-models/blazeface');
+        return faceModule.load();
+      } catch (_err) {
+        await loadScriptOnce(
+          'https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.1.0/dist/blazeface.min.js',
+          'blazeface'
+        );
+        return (window as any).blazeface.load();
+      }
     });
   }
   return faceRuntimeModelPromise;
@@ -99,11 +116,19 @@ const loadPersonRuntimeModel = async () => {
   if (!personRuntimeModelPromise) {
     personRuntimeModelPromise = loadTfRuntime().then(async (tf) => {
       await tf?.ready?.();
-      await loadScriptOnce(
-        'https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js',
-        'cocoSsd'
-      );
-      return (window as any).cocoSsd.load();
+      if ((window as any).cocoSsd?.load) {
+        return (window as any).cocoSsd.load();
+      }
+      try {
+        const cocoModule = await dynamicImport('@tensorflow-models/coco-ssd');
+        return cocoModule.load();
+      } catch (_err) {
+        await loadScriptOnce(
+          'https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js',
+          'cocoSsd'
+        );
+        return (window as any).cocoSsd.load();
+      }
     });
   }
   return personRuntimeModelPromise;
