@@ -13,6 +13,7 @@ import alertRoutes from "./routes/alertRoutes";
 import logRoutes from "./routes/logRoutes";
 import systemRoutes from "./routes/systemRoutes";
 import { getSystemStatus, getAccessPoints, getUsers } from "./controllers/systemController";
+import { startAiVisionSimulation } from "./services/aiVisionService";
 
 dotenv.config();
 
@@ -246,6 +247,7 @@ async function startServer() {
   };
 
   setTimeout(runTelemetryCycle, randInt(1000, 5000));
+  startAiVisionSimulation(io);
 
   const PORT = Number(process.env.PORT || 3000);
   httpServer.listen(PORT, "0.0.0.0", () => {
